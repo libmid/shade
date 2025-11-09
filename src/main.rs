@@ -1,8 +1,13 @@
+use std::f32::consts::PI;
 use std::f64::consts::E;
 use std::ffi::*;
 use std::process::exit;
 
 use clap::Parser;
+use iced::widget::{button, column, container, row, slider, slider::HandleShape, text};
+use iced::{
+    application, border::Radius, gradient::Linear, Background, Color, Element, Gradient, Task,
+};
 
 mod x11;
 
@@ -85,19 +90,136 @@ fn set_temp(dpy: *mut x11::Display, screen: c_int, temp: u32) {
 
 fn main() {
     let shade = Shade::parse();
-
-    if let Some(temp) = shade.set_temp {
-        unsafe {
-            let dpy = x11::XOpenDisplay(core::ptr::null_mut());
-            if dpy.is_null() {
-                eprintln!("XOpenDisplay(NULL) failed. Endure DISPLAY is set correctly!");
-                exit(1);
-            }
-            let screen = x11::XDefaultScreen(dpy);
-
+    unsafe {
+        let dpy = x11::XOpenDisplay(core::ptr::null_mut());
+        if dpy.is_null() {
+            eprintln!("XOpenDisplay(NULL) failed. Endure DISPLAY is set correctly!");
+            exit(1);
+        }
+        let screen = x11::XDefaultScreen(dpy);
+        if let Some(temp) = shade.set_temp {
             set_temp(dpy, screen, temp);
+        } else {
+            // Run GUI here
+            application("Shade", update, view)
+                .theme(|_| iced::Theme::Ferra)
+                .window_size((500.0, 300.0))
+                .run_with(move || {
+                    (
+                        ShadeState {
+                            temp: 6500,
+                            dpy,
+                            screen,
+                        },
+                        Task::none(),
+                    )
+                })
+                .unwrap();
+        }
+        x11::XCloseDisplay(dpy);
+    }
+}
 
-            x11::XCloseDisplay(dpy);
+struct ShadeState {
+    temp: u32,
+    dpy: *mut x11::Display,
+    screen: i32,
+}
+
+#[derive(Clone, Debug)]
+enum Message {
+    ChangeTemp(u32),
+    SetDay,
+    SetNight,
+    SetAstro,
+    Reset,
+}
+
+fn update(state: &mut ShadeState, message: Message) {
+    match message {
+        Message::ChangeTemp(temp) => {
+            set_temp(state.dpy, state.screen, temp);
+            state.temp = temp;
+        }
+
+        Message::SetDay => {
+            set_temp(state.dpy, state.screen, TEMP_DAY);
+            state.temp = TEMP_DAY;
+        }
+        Message::SetNight => {
+            set_temp(state.dpy, state.screen, TEMP_NIGHT);
+            state.temp = TEMP_NIGHT;
+        }
+        Message::SetAstro => {
+            set_temp(state.dpy, state.screen, 700);
+            state.temp = 700;
+        }
+        Message::Reset => {
+            set_temp(state.dpy, state.screen, TEMP_DAY);
+            state.temp = TEMP_DAY;
         }
     }
+}
+
+fn view(state: &ShadeState) -> Element<Message> {
+    column![
+        column![text("Set Screen Temperature")].padding(10),
+        slider(700..=10_000, state.temp, Message::ChangeTemp).style(|theme, status| {
+            let mut style = slider::default(theme, status);
+            style.rail.width = 60.0;
+            style.handle.shape = HandleShape::Rectangle {
+                width: 5,
+                border_radius: Radius::new(10),
+            };
+            style.handle.background = Background::Color(Color::BLACK);
+
+            // Temp Gradient
+            let grad1 = Linear::new(PI / 2.0)
+                .add_stop(0.0, kelvin_to_rgb(700.0))
+                .add_stop(1.0, kelvin_to_rgb(state.temp as f64));
+            let grad2 = Linear::new(PI / 2.0)
+                .add_stop(0.0, kelvin_to_rgb(state.temp as f64))
+                .add_stop(1.0, kelvin_to_rgb(10_000.0));
+
+            style.rail.backgrounds = (
+                Background::Gradient(Gradient::Linear(grad1)),
+                Background::Gradient(Gradient::Linear(grad2)),
+            );
+            style
+        })
+    ]
+    .into()
+}
+
+pub fn kelvin_to_rgb(temp_k: f64) -> Color {
+    let temp = temp_k / 100.0;
+
+    // Red
+    let red = if temp <= 66.0 {
+        255.0
+    } else {
+        let r = 329.698727446 * (temp - 60.0).powf(-0.1332047592);
+        r.clamp(0.0, 255.0)
+    };
+
+    // Green
+    let green = if temp <= 66.0 {
+        let g = 99.4708025861 * (temp.ln()) - 161.1195681661;
+        g.clamp(0.0, 255.0)
+    } else {
+        let g = 288.1221695283 * (temp - 60.0).powf(-0.0755148492);
+        g.clamp(0.0, 255.0)
+    };
+
+    // Blue
+    let blue = if temp >= 66.0 {
+        255.0
+    } else if temp <= 19.0 {
+        0.0
+    } else {
+        let b = 138.5177312231 * (temp - 10.0).ln() - 305.0447927307;
+        b.clamp(0.0, 255.0)
+    };
+
+    Color::from_rgb8(red.round() as u8, green.round() as u8, blue.round() as u8)
 }
